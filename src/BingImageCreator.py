@@ -1,17 +1,22 @@
+import argparse
 import asyncio
 import contextlib
 import json
 import os
+import random
 import sys
 import time
 
 import aiohttp
+import pkg_resources
 import regex
 import requests
-import argparse
-import pkg_resources
 
 BING_URL = "https://www.bing.com"
+# Generate random IP between range 13.104.0.0/14
+FORWARDED_IP = (
+    f"13.{random.randint(104, 107)}.{random.randint(0, 255)}.{random.randint(0, 255)}"
+)
 HEADERS = {
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
     "accept-language": "en-US,en;q=0.9",
@@ -20,6 +25,7 @@ HEADERS = {
     "referrer": "https://www.bing.com/images/create/",
     "origin": "https://www.bing.com",
     "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.63",
+    "x-forwarded-for": FORWARDED_IP,
 }
 
 
@@ -51,7 +57,7 @@ class ImageGen:
         # check for content waring message
         if "this prompt has been blocked" in response.text.lower():
             raise Exception(
-                "Your prompt has been blocked by Bing. Try to change any bad words and try again."
+                "Your prompt has been blocked by Bing. Try to change any bad words and try again.",
             )
         if (
             "we're working hard to offer image creator in more languages"
@@ -65,7 +71,7 @@ class ImageGen:
             if response3.status_code != 302:
                 print(f"ERROR: {response3.text}")
                 raise Exception(
-                    "Redirect failed, also possible that this prompt isn't allowed"
+                    "Redirect failed, also possible that this prompt isn't allowed",
                 )
             response = response3
         # Get redirect URL
@@ -99,13 +105,13 @@ class ImageGen:
         normal_image_links = list(set(normal_image_links))
 
         # Bad images
-        bad_images = [
-            "https://r.bing.com/rp/in-2zU3AJUdkgFe7ZKv19yPBHVs.png",
-            "https://r.bing.com/rp/TX9QuO3WzcCJz1uaaSwQAz39Kb0.jpg",
-        ]
-        for im in normal_image_links:
-            if im in bad_images:
-                raise Exception("Bad images")
+        # bad_images = [
+        #     "https://r.bing.com/rp/in-2zU3AJUdkgFe7ZKv19yPBHVs.png",
+        #     "https://r.bing.com/rp/TX9QuO3WzcCJz1uaaSwQAz39Kb0.jpg",
+        # ]
+        # for img in normal_image_links:
+        #     if img in bad_images:
+        #         raise Exception("Bad images")
         # No images
         if not normal_image_links:
             raise Exception("No images")
@@ -120,16 +126,21 @@ class ImageGen:
         with contextlib.suppress(FileExistsError):
             os.mkdir(output_dir)
         try:
-            for image_num, link in enumerate(links):
+            jpeg_index = 0
+            for link in links:
+                while os.path.exists(os.path.join(output_dir, f"{jpeg_index}.jpeg")):
+                    jpeg_index += 1
                 with self.session.get(link, stream=True) as response:
                     # save response to file
                     response.raise_for_status()
-                    with open(f"{output_dir}/{image_num}.jpeg", "wb") as output_file:
+                    with open(
+                        os.path.join(output_dir, f"{jpeg_index}.jpeg"), "wb"
+                    ) as output_file:
                         for chunk in response.iter_content(chunk_size=8192):
                             output_file.write(chunk)
         except requests.exceptions.MissingSchema as url_exception:
             raise Exception(
-                "Inappropriate contents found in the generated images. Please try again or try another prompt."
+                "Inappropriate contents found in the generated images. Please try again or try another prompt.",
             ) from url_exception
 
 
@@ -144,6 +155,7 @@ class ImageGenAsync:
         self.session = aiohttp.ClientSession(
             headers=HEADERS,
             cookies={"_U": auth_cookie},
+            trust_env=True,
         )
         self.quiet = quiet
 
@@ -168,7 +180,7 @@ class ImageGenAsync:
             content = await response.text()
             if "this prompt has been blocked" in content.lower():
                 raise Exception(
-                    "Your prompt has been blocked by Bing. Try to change any bad words and try again."
+                    "Your prompt has been blocked by Bing. Try to change any bad words and try again.",
                 )
             if response.status != 302:
                 # if rt4 fails, try rt3
@@ -201,7 +213,7 @@ class ImageGenAsync:
             if response.status != 200:
                 raise Exception("Could not get results")
             content = await response.text()
-            if content:
+            if content and content.find("errorMessage") == -1:
                 break
 
             await asyncio.sleep(1)
@@ -235,15 +247,21 @@ class ImageGenAsync:
         with contextlib.suppress(FileExistsError):
             os.mkdir(output_dir)
         try:
-            for image_num, link in enumerate(links):
+            jpeg_index = 0
+            for link in links:
+                while os.path.exists(os.path.join(output_dir, f"{jpeg_index}.jpeg")):
+                    jpeg_index += 1
+            for link in links:
                 async with self.session.get(link, raise_for_status=True) as response:
                     # save response to file
-                    with open(f"{output_dir}/{image_num}.jpeg", "wb") as output_file:
+                    with open(
+                        os.path.join(output_dir, f"{jpeg_index}.jpeg"), "wb"
+                    ) as output_file:
                         async for chunk in response.content.iter_chunked(8192):
                             output_file.write(chunk)
         except aiohttp.client_exceptions.InvalidURL as url_exception:
             raise Exception(
-                "Inappropriate contents found in the generated images. Please try again or try another prompt."
+                "Inappropriate contents found in the generated images. Please try again or try another prompt.",
             ) from url_exception
 
 
@@ -253,7 +271,7 @@ async def async_image_gen(args) -> None:
         await image_generator.save_images(images, output_dir=args.output_dir)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-U", help="Auth cookie from browser", type=str)
     parser.add_argument("--cookie-file", help="File containing auth cookie", type=str)
@@ -312,3 +330,7 @@ if __name__ == "__main__":
         )
     else:
         asyncio.run(async_image_gen(args))
+
+
+if __name__ == "__main__":
+    main()

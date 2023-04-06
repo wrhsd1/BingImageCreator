@@ -4,13 +4,14 @@ High quality image generation by Microsoft. Reverse engineered API.
 `pip3 install --upgrade BingImageCreator`
 
 ```
- $ python3 -m BingImageCreator -h 
+ $ python3 -m BingImageCreator -h
 usage: BingImageCreator.py [-h] -U U --prompt PROMPT [--output-dir OUTPUT_DIR]
 
 options:
   -h, --help            show this help message and exit
   -U U                  Auth cookie from browser
   --prompt PROMPT       Prompt to generate images for
+  --asyncio             Use async to sync png
   --output-dir OUTPUT_DIR
                         Output directory
 ```
