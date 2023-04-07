@@ -1,16 +1,17 @@
 import argparse
 import asyncio
+from functools import partial
 import contextlib
 import json
 import os
 import random
 import sys
 import time
-
 import aiohttp
 import pkg_resources
 import regex
 import requests
+from typing import Union
 
 BING_URL = "https://www.bing.com"
 # Generate random IP between range 13.104.0.0/14
@@ -28,6 +29,27 @@ HEADERS = {
     "x-forwarded-for": FORWARDED_IP,
 }
 
+# Error messages
+error_timeout = "Your request has timed out."
+error_redirect = "Redirect failed"
+error_blocked_prompt = (
+    "Your prompt has been blocked by Bing. Try to change any bad words and try again."
+)
+error_noresults = "Could not get results"
+error_unsupported_lang = "\nthis language is currently not supported by bing"
+error_bad_images = "Bad images"
+error_no_images = "No images"
+#
+sending_message = "Sending request..."
+wait_message = "Waiting for results..."
+download_message = "\nDownloading images..."
+
+
+def debug(debug_file, text_var):
+    """helper function for debug"""
+    with open(f"{debug_file}", "a") as f:
+        f.write(str(text_var))
+
 
 class ImageGen:
     """
@@ -36,11 +58,16 @@ class ImageGen:
         auth_cookie: str
     """
 
-    def __init__(self, auth_cookie: str, quiet: bool = False) -> None:
+    def __init__(
+        self, auth_cookie: str, debug_file: Union[str, None] = None, quiet: bool = False
+    ) -> None:
         self.session: requests.Session = requests.Session()
         self.session.headers = HEADERS
         self.session.cookies.set("_U", auth_cookie)
         self.quiet = quiet
+        self.debug_file = debug_file
+        if self.debug_file:
+            self.debug = partial(debug, self.debug_file)
 
     def get_images(self, prompt: str) -> list:
         """
@@ -49,30 +76,36 @@ class ImageGen:
             prompt: str
         """
         if not self.quiet:
-            print("Sending request...")
+            print(sending_message)
+        if self.debug_file:
+            self.debug(sending_message)
         url_encoded_prompt = requests.utils.quote(prompt)
         # https://www.bing.com/images/create?q=<PROMPT>&rt=3&FORM=GENCRE
         url = f"{BING_URL}/images/create?q={url_encoded_prompt}&rt=4&FORM=GENCRE"
         response = self.session.post(url, allow_redirects=False)
         # check for content waring message
         if "this prompt has been blocked" in response.text.lower():
+            if self.debug_file:
+                self.debug(f"ERROR: {error_blocked_prompt}")
             raise Exception(
-                "Your prompt has been blocked by Bing. Try to change any bad words and try again.",
+                error_blocked_prompt,
             )
         if (
             "we're working hard to offer image creator in more languages"
             in response.text.lower()
         ):
-            raise Exception("this language is currently not supported by bing")
+            if self.debug_file:
+                self.debug(f"ERROR: {error_unsupported_lang}")
+            raise Exception(error_unsupported_lang)
         if response.status_code != 302:
             # if rt4 fails, try rt3
             url = f"{BING_URL}/images/create?q={url_encoded_prompt}&rt=3&FORM=GENCRE"
             response3 = self.session.post(url, allow_redirects=False, timeout=200)
             if response3.status_code != 302:
+                if self.debug_file:
+                    self.debug(f"ERROR: {error_redirect}")
                 print(f"ERROR: {response3.text}")
-                raise Exception(
-                    "Redirect failed, also possible that this prompt isn't allowed",
-                )
+                raise Exception(error_redirect)
             response = response3
         # Get redirect URL
         redirect_url = response.headers["Location"].replace("&nfy=1", "")
@@ -81,17 +114,23 @@ class ImageGen:
         # https://www.bing.com/images/create/async/results/{ID}?q={PROMPT}
         polling_url = f"{BING_URL}/images/create/async/results/{request_id}?q={url_encoded_prompt}"
         # Poll for results
+        if self.debug_file:
+            self.debug("Polling and waiting for result")
         if not self.quiet:
             print("Waiting for results...")
         start_wait = time.time()
         while True:
             if int(time.time() - start_wait) > 200:
-                raise Exception("Timeout error")
+                if self.debug_file:
+                    self.debug(f"ERROR: {error_timeout}")
+                raise Exception(error_timeout)
             if not self.quiet:
                 print(".", end="", flush=True)
             response = self.session.get(polling_url)
             if response.status_code != 200:
-                raise Exception("Could not get results")
+                if self.debug_file:
+                    self.debug(f"ERROR: {error_noresults}")
+                raise Exception(error_noresults)
             if not response.text or response.text.find("errorMessage") != -1:
                 time.sleep(1)
                 continue
@@ -104,7 +143,6 @@ class ImageGen:
         # Remove duplicates
         normal_image_links = list(set(normal_image_links))
 
-        # Bad images
         # bad_images = [
         #     "https://r.bing.com/rp/in-2zU3AJUdkgFe7ZKv19yPBHVs.png",
         #     "https://r.bing.com/rp/TX9QuO3WzcCJz1uaaSwQAz39Kb0.jpg",
@@ -114,15 +152,17 @@ class ImageGen:
         #         raise Exception("Bad images")
         # No images
         if not normal_image_links:
-            raise Exception("No images")
+            raise Exception(error_no_images)
         return normal_image_links
 
     def save_images(self, links: list, output_dir: str) -> None:
         """
         Saves images to output directory
         """
+        if self.debug_file:
+            self.debug(download_message)
         if not self.quiet:
-            print("\nDownloading images...")
+            print(download_message)
         with contextlib.suppress(FileExistsError):
             os.mkdir(output_dir)
         try:
@@ -251,7 +291,6 @@ class ImageGenAsync:
             for link in links:
                 while os.path.exists(os.path.join(output_dir, f"{jpeg_index}.jpeg")):
                     jpeg_index += 1
-            for link in links:
                 async with self.session.get(link, raise_for_status=True) as response:
                     # save response to file
                     with open(
@@ -288,6 +327,13 @@ def main():
         type=str,
         default="./output",
     )
+
+    parser.add_argument(
+        "--debug-file",
+        help="Path to the file where debug information will be written.",
+        type=str,
+    )
+
     parser.add_argument(
         "--quiet",
         help="Disable pipeline messages",
@@ -303,6 +349,7 @@ def main():
         action="store_true",
         help="Print the version number",
     )
+
     args = parser.parse_args()
 
     if args.version:
@@ -323,7 +370,7 @@ def main():
 
     if not args.asyncio:
         # Create image generator
-        image_generator = ImageGen(args.U, args.quiet)
+        image_generator = ImageGen(args.U, args.debug_file, args.quiet)
         image_generator.save_images(
             image_generator.get_images(args.prompt),
             output_dir=args.output_dir,
